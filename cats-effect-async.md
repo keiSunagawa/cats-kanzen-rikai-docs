@@ -126,19 +126,50 @@ IOAppの実装は本物の「処理系」に依存する
 以降、本ドキュメントではjvmを前提として話を進める  
 
 ### 同期実行/非同期実行
-同期実行は `unsafeRunSync`, 非同期実行は `unsafeRunAsync` で実行できる, `unsafeRunAsync` は例外のハンドリングを要求し、戻り値はUnitだ  
-つまり、結果を取得したい場合は `unsafeRunSync` を使い、現在のスレッドでawaitする必要がある(これは非同期処理に置いては当然のことだが)  
-`unsafeRunSync` は必ずしも実行スレッドと同じスレッドでIOタスクされるわけはなく、どこかのスレッドで実行され、現在のスレッドで同期処理を行なっているだけなのだ  
+同期実行は `IO#unsafeRunSync`, 非同期実行は `TO#unsafeRunAsync` で実行できる, `IO#unsafeRunAsync` は例外のハンドリングを要求し、戻り値はUnitだ  
+つまり、結果を取得したい場合は `IO#unsafeRunSync` を使い、現在のスレッドでawaitする必要がある(これは非同期処理に置いては当然のことだが)  
+`IO#unsafeRunSync` は必ずしも実行スレッドと同じスレッドでIOタスクされるわけはなく、どこかのスレッドで実行され、現在のスレッドで同期処理を行なっているだけなのだ  
 どのスレッドで実行されるかは、IOタスク自身に依存する(つまり、IOタスク自身でどのスレッドで実行させるかを決定できるのだ、その方法は後続で示そう)
 
 ### unsafeToFuture
-必要ならば、scala標準のFutureに変換することができる, `unsafeToFuture` を使えばいい  
+必要ならば、scala標準のFutureに変換することができる, `IO#unsafeToFuture` を使えばいい  
 これはAkkaなど他の非同期機構と連携したいときに有効だ  
 Futureはscalaプログラマには扱いなれた形だろうので本ドキュメントでは説明しない  
 (実は筆者はFutureをあまり使ったことがないので説明できないのだ)  
 
 ### Timeout
+`IO#timeout` はIOタスクにタイムアウトを設定できる、設定したtimeout値を超えた場合は `TimeoutException` も持った失敗の文脈に遷移する(つまり `ApplicativeError.raiseError` だ)  
+この関数は `implicit parameter` `Timer` と `ContextShift` を要求する、TimerはスケジューラのようなものでContextShiftはスレッドプールのようなものだ(ContextShiftについては後続で詳しく説明する)  
+いずれも `IOApp` ないで「デフォルト」を定義されているので、特にこだわりがなければそちらを使うといい(もちろん、最適化を考えたとき、いずれ向き合うことになるものだ)  
 
+```scala
+import cats.effect.{ IO, IOApp, ExitCode }
+import scala.concurrent.duration._
+import scala.concurrent.TimeoutException
+
+object Main extends IOApp {
+  // TimerとContextShiftはIOApp内でimplicit valueとして定義されてるため、暗黙的に渡される
+  val program = (for {
+    _ <- IO { Thread.sleep(100) }.timeout(1.second) // 自身に設定されているtimeout内で終了すれば、次のIOにそのtimeout値を引き継ぐことはない
+    _ <- IO { println("complete step1.") }
+    _ <- IO { Thread.sleep(1000) }.timeout(10.second)
+           .handleErrorWith {
+             case e: TimeoutException => IO.unit
+             case e: Throwable => IO.raiseError(e)
+            } // もちろん、タイムアウトエラーから復帰することも可能だ
+    _ <- IO { println("complete step2.") }
+    _ <- IO { Thread.sleep(Int.MaxValue) }.timeout(1.second)
+    _ <- IO { println("complete step3.") }
+  } yield ExitCode.Success).timeout(3.second) // このIO taskブロック"全体"のtimeout値として見ることができる
+
+  def run(args: List[String]): IO[ExitCode] = {
+    program
+  }
+}
+
+// timeoutを超えるため例外がなげられる!とても危険だ!
+Main.main(Array())
+```
 
 ### ひとつのIOでひとつのアプリケーション
 
