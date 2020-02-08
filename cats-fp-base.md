@@ -2,7 +2,47 @@
 `ammonite reple` はリッチなscalaのREPLだ  
 関数型及びcatsの話とは関係ないが、以降の説明で度々出てくるサンプルコードを動かして学んで欲しいため  
 そのためのツールの導入と説明を初めに説明しておく  
-TODO 導入と初期設定の説明  
+
+repl本体については、このリポジトリにDockerfileを用意しているので、使って欲しい  
+
+```sh
+$ cd <repo root>/repl
+
+$ docker build -t amm .
+
+$ docker run -it amm
+```
+
+ammイメージにはデフォルトでcatsのライブラリが使えるように細工をしている、これはammoniteで提供されているmagic importと  
+言う機能を使ったものだ  
+立ち上がれば、即座にcatsのライブラリが使用できる  
+
+```scala
+@ import cats._
+import cats._
+
+@ import cats.implicits._
+import cats.implicits._
+
+@ Functor[Option].map(Option(3)) { i => i + i }
+res3: Option[Int] = Some(6)
+```
+
+複数行のコードを一気に読み込む場合は `{ }` で囲む必要がある  
+これはコンパニオンオブジェクトを定義したい場合などに有用だ  
+
+```scala
+@ {
+    case class Foo(bar: Int)
+    object Foo {
+      def showBar(foo: Foo): String = s"bar is ${foo.bar}"
+    }
+  }
+defined class Foo
+defined object Foo
+```
+
+使い方は以上だ、これで足回りが整ったと思うので思う存分サンプルコードたちを実行して欲しい
 
 ## 型クラス(type class)  
 いきなり「型クラスとは」と聞くと身構えるかもしれないが  
