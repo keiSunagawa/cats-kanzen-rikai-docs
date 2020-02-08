@@ -137,10 +137,10 @@ IOAppの実装は本物の「処理系」に依存する
 Futureはscalaプログラマには扱いなれた形だろうので本ドキュメントでは説明しない  
 (実は筆者はFutureをあまり使ったことがないので説明できないのだ)  
 
-### Timeout
+### timeout
 `IO#timeout` はIOタスクにタイムアウトを設定できる、設定したtimeout値を超えた場合は `TimeoutException` も持った失敗の文脈に遷移する(つまり `ApplicativeError.raiseError` だ)  
 この関数は `implicit parameter` `Timer` と `ContextShift` を要求する、TimerはスケジューラのようなものでContextShiftはスレッドプールのようなものだ(ContextShiftについては後続で詳しく説明する)  
-いずれも `IOApp` ないで「デフォルト」を定義されているので、特にこだわりがなければそちらを使うといい(もちろん、最適化を考えたとき、いずれ向き合うことになるものだ)  
+いずれも `IOApp` 内で「デフォルト」を定義されているので、特にこだわりがなければそちらを使うといい(もちろん、最適化を考えたとき、いずれ向き合うことになるものだ)  
 
 ```scala
 import cats.effect.{ IO, IOApp, ExitCode }
@@ -152,13 +152,13 @@ object Main extends IOApp {
   val program = (for {
     _ <- IO { Thread.sleep(100) }.timeout(1.second) // 自身に設定されているtimeout内で終了すれば、次のIOにそのtimeout値を引き継ぐことはない
     _ <- IO { println("complete step1.") }
-    _ <- IO { Thread.sleep(1000) }.timeout(10.second)
+    _ <- IO { Thread.sleep(1000) }.timeout(10.millis)
            .handleErrorWith {
              case e: TimeoutException => IO.unit
              case e: Throwable => IO.raiseError(e)
             } // もちろん、タイムアウトエラーから復帰することも可能だ
     _ <- IO { println("complete step2.") }
-    _ <- IO { Thread.sleep(Int.MaxValue) }.timeout(1.second)
+    _ <- IO { Thread.sleep(Int.MaxValue) } // ほぼ無限時間Threadをブロックする
     _ <- IO { println("complete step3.") }
   } yield ExitCode.Success).timeout(3.second) // このIO taskブロック"全体"のtimeout値として見ることができる
 
@@ -171,12 +171,77 @@ object Main extends IOApp {
 Main.main(Array())
 ```
 
+意識して欲しいのはタイムアウトの設定は「型には現れない」ということだ  
+アプリケーションの性質によるが、多くの場合においてタイムアウトは設定しておいたほうがいい  
+ただし、呼び出し側からはみえない値なのでむやみに設定すればいいというものではない  
+本当に必要な部分を除けば、原則 `unsafeRunSync` を呼び出す直前やIOAppの `run` メソッド内でのみ記述するといいだろう  
+
 ### ひとつのIOでひとつのアプリケーション
+IOAppのrunメソッドのシグネチャが示す通り、大小様々なIOタスクを定義したとしても、最終的にはそれらを  
+ひとつのIOタスクに合成することが大切だ、他のフレームワークとの同期などの止むを得ない状況を除き、不用意に  
+`unsafeRunSync` を呼び出しているアプリケーションを書いているのであれば、それは間違った使い方をしている可能性があるので  
+気をつけるべきだ。cats-effectはIOを組み合わせたり、互いに連携したりするために必要な関数をちゃんと提供しているので  
+なにかやりたいことがあるときはまずはAPIを眺めて考えてみるのも有効な手だ  
+https://typelevel.org/cats-effect/api/cats/effect/IO$.html
+https://typelevel.org/cats-effect/api/cats/effect/IO.html
 
 ## 他のデータ構造への変換 - LiftIO
+前項でひとつのIOタスクに合成することが重要だといったものの、ライブラリや他のフレームワークの兼ね合いでIOを  
+他のデータ構造に埋め込む必要が度々発生するのは事実だ、そのための手段としてcatsは `LiftIO` という型クラスを提供している  
+
+### LiftIO
+
+```scala
+// 例としてdoobieのデータ構造を使おう
+import doobie._
+import doobie.implicits._
+
+import cats.effect.{ IO, LiftIO }
+
+object Test {
+  val ioProgram: IO[Unit] = for {
+    _ <- IO { println("start.") }
+  } yield ()
+
+  val conIOProgram: ConnectionIO[Unit] = ???
+
+  def case1: Unit = {
+    val mergedProgram: ConnectionIO[Unit] = for {
+      _ <- conIOProgram
+      _ <- ioProgram.to[ConnectionIO] // IO を ConnectionIO に組み込む(lift)する
+    } yield ()
+  }
+}
+```
+
+doobieはcats friendlyなDBアクセスライブラリだ  
+`ConnectionIO` は通常のIOに加え、DBへのトランザクションの文脈も持ったデータ構造になる  
+(さらに言うならFreeMonadによって実装されている、この辺はdoobieのページで説明しようと思う)  
+ただし、IOとの継承関係が存在しているわけではないのでIOで行える操作は一切行えない  
+この関係性の橋渡しをするのが `LiftIO` の振る舞いだ  
+LiftIOは任意のデータ構造 `F[_]` に対してIOの文脈を組み込める振る舞いを提供する  
+これはつまり、型の上では `IO[A] => F[A]` ができるという表現になる、事実LiftIOの型シグネチャはその通りだ  
+
+```scala
+import cats.effect.IO
+
+trait LiftIO[F[_]] {
+  def liftIO[A](ioa: IO[A]): F[A]
+}
+```
+
+IOがどのようにデータ構造 `F[_]` に取り込まれるかは実装に委ねられている  
+また `F[A] => IO[A]` の逆方向の変換は「提供しない」  
+`ConnectionIO` の場合は `transact` 関数で再び `IO` に戻すことはできるが、他のデータ構造に関してはその限りではない  
+つまり、組み込む方法も組み込まれた後の話もすべてデータ構造 `F[_]` の実装に委ねられているのだ  
+
+LiftIOそれ自体をsummoner経由で使うこともできるが、`IO#to[F[_]: LiftIO]` というメソッドが用意されているため、そちらを使うのが一般的だろう  
 
 ## 安全なリソース使用 - Resource/Bracket
+TODO
 
 ## スレッドシフト - ContextShift
+TODO // 必要な知識を優先するため先にStreamの説明を進める
 
 ## 並列処理
+TODO
