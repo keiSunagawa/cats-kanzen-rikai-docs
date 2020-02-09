@@ -1,5 +1,5 @@
-## ammonite repl  
-`ammonite repl` はリッチなscalaのREPLだ  
+## Ammonite REPL  
+`Ammonite REPL` はリッチなscalaのREPLだ  
 関数型及びcatsの話とは関係ないが、以降の説明で度々出てくるサンプルコードを動かして学んで欲しいため  
 そのためのツールの導入と説明を初めに説明しておく  
 
