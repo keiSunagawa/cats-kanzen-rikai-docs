@@ -192,12 +192,51 @@ object Test {
 
 ### chunks
 `chunkN` は名前の通りchunkを作り出すメソッドだ  
-型で示すと `Stream[F[_], A] => Stream[F[_], Chunk[A]]` で、Chunkは引数の数値分の要素を保持する  
+型で示すと `Stream[IO[_], A] => Stream[IO[_], Chunk[A]]` で、Chunkは引数の数値分の要素を保持する  
 `Chunk[A]` は要素数固定の配列がさらに最適化されたようなものだ  
 当たり前だが `chunkN` メソッドを呼び出した場合は、`Chunk[A]` がメモリに乗る粒度になり  
 これを `stream.chunkN(100).flatMap { xs => Stream.chunk(xs) }` としたところでn要素がメモリに乗ることは変わらないので気をつけよう(当たり前だが)  
 (むしろ情報をロストしているので僕は避けたほうがよいと思う)
 
+### unfoldEval
+`unfoldEval` は初期値 `S` と `S => IO[Option[(O, S)]]` を受け取り、`Stream[IO, O]` を作り出すメソッドだ  
+これは僕がStreamの上流を独自で用意したいときによく使う  
+`S => F[Option[(O, S)]]` は `S` からevalすべきIOを作り出し、次の `S` とセットで返す  
+`F[Option[(O, S)]]` がNoneの場合はStreamの終端を表す  
 
+```scala
+import fs2.Stream
+import cats.effect.IO
+
+object Test {
+  val source0 = List("a", "b", "c")
+  def source(i: Int): IO[Option[String]] = IO { source0.lift(i) }
+  def case1: Unit = {
+    Stream.unfoldEval[IO, Int, String](0) { i => source(i).map { opt: Option[String] => opt.map { _ -> (i+1) } } }
+      .evalMap { x =>
+        IO { println("processed: " + x) }
+      }.compile.drain.unsafeRunSync // processed: a\nprocessed: b\nprocessed: c
+  }
+}
+```
+
+これはlistの終端までindexアクセスを行い、終端までたどり着いたら終了をする例だ  
+これは外部から継続してソースを取ってくる処理を書くために使える、メモリに乗る粒度はもちろんsourceの取得関数次第だ  
+(試しにこれを `scala.io.Source.fromFile` などでIteratorを取得する処理に書き換えてみれば、よくわかるだろう)  
 
 ## Pure[_]型
+Pure型は型をひとつとる高階型におけるボトム型だ(という言い方が正しいかはわからないが、そのように振る舞う)  
+これは通常の型におけるNothingと同じだ  
+
+```scala
+import fs2.{ Pure, Stream }
+import cats.effect.IO
+
+object Test {
+  def case1: Unit = {
+    // Pureはボトム型(全ての型のサブクラス)なので Stream[IO, _] に型強制できる
+    val s: Stream[IO, Int] = Stream.emit[Pure, Int](1)
+    val i: Int = ??? //これはNothingの振る舞いと同じだ, `???` はNothingを返す関数だ
+  }
+}
+```
