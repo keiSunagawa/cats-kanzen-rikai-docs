@@ -245,3 +245,5 @@ TODO // 必要な知識を優先するため先にStreamの説明を進める
 
 ## 並列処理
 TODO
+
+[fs2.StreamによるStreaming処理](./fs2-stream.md)
