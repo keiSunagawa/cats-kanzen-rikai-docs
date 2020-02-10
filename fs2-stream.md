@@ -42,56 +42,65 @@ class Stream[+F[_], +O]
 
 ### compile
 fs2.Streamは `compile` メソッドを呼び出すことで「組み立てる」ことができる  
-fs2.Streamの実態は各状態を表したデータ構造を再帰的にNestしたものだ  
-実際に定義されているものはとても複雑なので、この直感を掴むためにも簡略化されたものを定義しよう  
+fs2.Streamの実態は各命令を表したデータ構造を再帰的にNestしたものだ  
+(例によって簡略化したコードを掲載しようと思ったが、僕の力不足で作れなかった、後日再度挑戦しようと思う)  
 
-// だいぶきびしいかも。
+fs2.Streamにおける命令(flatMapやevalや `++` )を各メソッドで積み上げ、その命令列を順次解釈し、別のデータ構造 `F[_]` を組み立てるのがcompileメソッドの実態だ  
+抽象的でわかりづらい話かもしれないが、ここで伝えたいことは  
+- fs2.Streamは各メソッドを呼び出した時点ではデータの流れは発生せず、命令列を作っているだけ  
+- `compile` メソッドも命令列を解釈し、別のデータ構造(例えばIO)を組み立てているだけ(この時点でもstream処理は実施されない)  
+  (さらに正確に言うとcompileメソッドもCompilerOpsに包んでいるだけで実際はdrainメソッドなどを呼び出した後にデータ構造の組み上げが始まる)  
+- 完成したデータ構造 `F[_]` は実行(IOならばunsafeRunSync)するとstream処理を行うタスクであることを意味する  
+
+## Compiler
+`Compiler[F[_], G[_]]` はfs2で用意されている `Stream[F[_], O]` から `G[O]` への変換をする振る舞いを持つ型クラスだ  
+変換というのは先に示したStreamを「組み立て」てデータ構造 `G[_]` を作成することと同義だ  
+ここで2つのデータ構造 `F[_]` `G[_]` が登場していることを疑問に思われるかもしれないが、基本的には `F[_] == G[_]` で扱われることが多い  
+そして、実際にimplicit導出はほぼ以下のものが使われると思ってよい  
 
 ```scala
-sealed trait Command[F[_], O, O2]
-case class Pure[F[_], O]() extends Command[F, O, O]
-case class FMap[F[_], O, OM, O2](f: O => OM, next: Command[F, OM, O2]) extends Command[F, O, O2]
+import cats.effect.Sync
 
-import cats.Monad
-import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.applicative._
+implicit def syncInstance[F[_]](implicit F: Sync[F]): Compiler[F, F]
+```
 
-case class Stream[F[_], O, O2](source: F[Option[O]], cmds: Command[F, O, O2])
+これは実際にfs2内部でCompier型のコンパニオンオブジェクトに用意されている定義だ  
+これはデータ構造 `F[_]` に対してSync型クラスさえあればCompilerを導出できることを意味している  
+IOはもちろんSync型クラスを実装しているので、`Compiler[IO, IO]` はこの定義によって導出されている  
 
-object Stream {
-//  def eval()
+### Sync
+`Sync[F[_]]` はデータ構造 `F[_]` または `F[_]` を返す関数に対して、評価を遅延して `F[_]` を取得できる振る舞いを持つ型クラスだ  
+これは `F[_]` にの文脈における副作用を一時停止(suspend)させている振る舞いを持つとも言える  
+コードで示そう  
 
-  def compile[O, O2, L, F[_]: Monad](stream: Stream[F, O, O2], fold: (L, O2) => L, acc: L): F[L] = {
-    stream.source.flatMap {
-      case Some(s) => compileLoop(s, stream.cmds).flatMap { result =>
-        compile(stream, fold, fold(acc, result))
-      }
-      case None => acc.pure[F]
-    }
-  }
-  def compileLoop[O, O2, F[_]: Monad](s: O, cmds: Command[F, O, O2]): F[O2] = {
-    cmds match {
-      case Pure() => s.asInstanceOf[O2].pure[F]
-      case FMap(f, next) => compileLoop(f(s), next)
-    }
-  }
-}
+```scala
+import cats.effect.Sync
+import cats.effect.IO
+import cats.Applicative
 
 object Test {
+
+  def unsafe[F[_]: Applicative](): F[Int] = {
+    println("fetch by sideffect..")
+    Applicative[F].pure { 3 }
+  }
+  def safe[F[_]: Applicative: Sync](): F[Int] = Sync[F].suspend {
+    println("fetch by sideffect..")
+    Applicative[F].pure { 3 }
+  }
+
   def case1: Unit = {
-    var source0: List[Int] = List(1, 2, 3)
-    val source: IO[Option[Int]] = IO {
-      val h = source0.headOption
-      source0 = if (source0.isEmpty) Nil else source0.tail
-      h
-    }
+    val task = unsafe[IO]() // fetch by sideffect..
+    println("===")
+    println(task.unsafeRunSync) // => 3
+  }
 
-    val stream = Stream[IO, Int, Int](source, FMap((o: Int) => o + 1, Pure()))
-    val res = Stream.compile(stream, (xs: List[Int], b: Int) => b :: xs, Nil)
-
-    println(res.unsafeRunSync)
+  def case2: Unit = {
+    val task = safe[IO]()
+    println("===")
+    println(task.unsafeRunSync) // fetch by sideffect.. => 3
   }
 }
 ```
 
+`case2` の方は `F[_]` に抽象化していた上で副作用を安全に遅延させられていることに気付くだろう  
